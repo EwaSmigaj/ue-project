@@ -12,6 +12,13 @@ interface Recipe {
   isFavorite: boolean;
 }
 
+// NOWY TYP: Planer posiłków
+interface MealPlanEntry {
+  day: string; // np. Poniedziałek
+  mealType: 'Śniadanie' | 'Obiad' | 'Kolacja';
+  recipeId: number | null; // ID przepisu lub null, jeśli nic nie wybrano
+}
+
 const recipes = ref<Recipe[]>([
   {
     id: 1,
@@ -28,7 +35,7 @@ const recipes = ref<Recipe[]>([
     author: 'Kuchnia Włoska',
     img: '🍝',
     tags: [],
-    ingredients: ['makaron', 'mięso', 'sos pomidorowy', 'ser'],
+    ingredients: ['makaron', 'mięso', 'sos pomidorowy', 'ser', 'cebula'],
     isFavorite: false
   },
   {
@@ -37,7 +44,7 @@ const recipes = ref<Recipe[]>([
     author: 'Zdrowie 100%',
     img: '🥤',
     tags: ['ZDROWE'],
-    ingredients: ['jogurt', 'banan', 'szpinak'],
+    ingredients: ['jogurt', 'banan', 'szpinak', 'nasiona chia'],
     isFavorite: true
   },
   {
@@ -46,7 +53,7 @@ const recipes = ref<Recipe[]>([
     author: 'Babcia Zosia',
     img: '🍅',
     tags: ['SZYBKIE'],
-    ingredients: ['pomidory', 'wywar', 'śmietana', 'ryż'],
+    ingredients: ['pomidory', 'wywar', 'śmietana', 'ryż', 'cebula'],
     isFavorite: false
   }
 ]);
@@ -56,7 +63,26 @@ type View = 'HOME' | 'LIST' | 'FAVORITES' | 'DETAIL' | 'PLANNER' | 'SHOPPING';
 const currentView = ref<View>('HOME');
 const selectedRecipe = ref<Recipe | null>(null);
 
-// --- 3. Nawigacja ---
+// NOWY STAN: Planer posiłków (domyślny szablon na 3 dni)
+const days = ['Poniedziałek', 'Wtorek', 'Środa', 'Czwartek', 'Piątek', 'Sobota', 'Niedziela'];
+const mealTypes: MealPlanEntry['mealType'][] = ['Śniadanie', 'Obiad', 'Kolacja'];
+
+const mealPlan = ref<MealPlanEntry[]>(
+  days.flatMap(day => 
+    mealTypes.map(mealType => ({ 
+      day, 
+      mealType, 
+      recipeId: null 
+    }))
+  )
+);
+
+// Zmienna do przechowywania tymczasowego wyboru przepisu w Plannerze
+const plannerSelectedRecipeId = ref<number | null>(null); 
+const plannerTargetSlot = ref<{ day: string, mealType: MealPlanEntry['mealType'] } | null>(null);
+
+
+// --- 3. Nawigacja i Akcje ---
 const goHome = () => {
   currentView.value = 'HOME';
   selectedRecipe.value = null;
@@ -65,6 +91,8 @@ const goHome = () => {
 const goBack = () => {
   if (currentView.value === 'DETAIL') {
     currentView.value = 'LIST';
+  } else if (currentView.value === 'PLANNER' && plannerTargetSlot.value) {
+    plannerTargetSlot.value = null; // Wróć z widoku wyboru przepisu do głównego planera
   } else {
     goHome();
   }
@@ -76,15 +104,88 @@ const showPlanner = () => currentView.value = 'PLANNER';
 const showShopping = () => currentView.value = 'SHOPPING';
 
 const openRecipe = (recipe: Recipe) => {
-  selectedRecipe.value = recipe;
-  currentView.value = 'DETAIL';
+  if (currentView.value === 'PLANNER' && plannerTargetSlot.value) {
+    // Jeśli jesteśmy w trybie dodawania do planera
+    addRecipeToPlan(plannerTargetSlot.value.day, plannerTargetSlot.value.mealType, recipe.id);
+    plannerTargetSlot.value = null; // Wyjdź z trybu wyboru
+    currentView.value = 'PLANNER';
+  } else {
+    // Normalne otwarcie szczegółów przepisu
+    selectedRecipe.value = recipe;
+    currentView.value = 'DETAIL';
+  }
 };
 
 const toggleFavorite = (recipe: Recipe) => {
   recipe.isFavorite = !recipe.isFavorite;
 };
 
+// --- 4. Logika Planera Posiłków ---
+const getRecipeTitleById = (id: number | null): string => {
+  if (id === null) return '';
+  const recipe = recipes.value.find(r => r.id === id);
+  return recipe ? recipe.title : 'Nieznany Przepis';
+};
+
+const addRecipeToPlan = (day: string, mealType: MealPlanEntry['mealType'], recipeId: number) => {
+  const entry = mealPlan.value.find(e => e.day === day && e.mealType === mealType);
+  if (entry) {
+    entry.recipeId = recipeId;
+  }
+};
+
+const removeRecipeFromPlan = (day: string, mealType: MealPlanEntry['mealType']) => {
+  const entry = mealPlan.value.find(e => e.day === day && e.mealType === mealType);
+  if (entry) {
+    entry.recipeId = null;
+  }
+};
+
+const startRecipeSelection = (day: string, mealType: MealPlanEntry['mealType']) => {
+  plannerTargetSlot.value = { day, mealType };
+  currentView.value = 'LIST'; // Możemy użyć istniejącego widoku listy do wyboru
+};
+
+// Funkcja pomocnicza do grupowania planu
+const groupedMealPlan = computed(() => {
+  return days.map(day => ({
+    day,
+    meals: mealTypes.map(mealType => mealPlan.value.find(e => e.day === day && e.mealType === mealType))
+  }));
+});
+
+
+// --- 5. Logika Listy Zakupów ---
+const shoppingList = computed(() => {
+  const ingredientsMap = new Map<string, boolean>(); // Składnik -> stan (czy kupiony)
+  
+  // 1. Zbierz składniki z zaplanowanych przepisów
+  const plannedRecipeIds = new Set(mealPlan.value.map(e => e.recipeId).filter(id => id !== null) as number[]);
+  
+  plannedRecipeIds.forEach(recipeId => {
+    const recipe = recipes.value.find(r => r.id === recipeId);
+    if (recipe) {
+      recipe.ingredients.forEach(ingredient => {
+        const normalizedIng = ingredient.toLowerCase().trim();
+        if (!ingredientsMap.has(normalizedIng)) {
+          ingredientsMap.set(normalizedIng, false); // Domyślnie niekupione
+        }
+      });
+    }
+  });
+
+  // 2. Konwertuj mapę na tablicę do wyświetlenia
+  return Array.from(ingredientsMap.keys()).sort();
+});
+
+
+// --- 6. Computed dla wyświetlania ---
 const displayedRecipes = computed(() => {
+  // Jeśli jesteśmy w trybie wyboru przepisu dla planera, wyświetl wszystkie lub ulubione, jeśli jest włączony widok 'FAVORITES'
+  if (currentView.value === 'LIST' && plannerTargetSlot.value) {
+    return recipes.value;
+  }
+
   if (currentView.value === 'FAVORITES') {
     return recipes.value.filter(r => r.isFavorite);
   }
@@ -98,7 +199,11 @@ const displayedRecipes = computed(() => {
       
       <header class="top-bar">
         <div class="left-nav">
-          <button v-if="currentView !== 'HOME'" @click="goBack" class="nav-btn back-btn">
+          <button 
+            v-if="currentView !== 'HOME'" 
+            @click="goBack" 
+            class="nav-btn back-btn"
+          >
             ↩ Wróć
           </button>
           <span v-else class="logo">🍲 BABUSHEX</span>
@@ -142,7 +247,13 @@ const displayedRecipes = computed(() => {
         </main>
 
         <main v-else-if="currentView === 'LIST' || currentView === 'FAVORITES'" class="list-view">
-          <h2 class="section-title">{{ currentView === 'FAVORITES' ? 'Twoje Ulubione' : 'Książka Kucharska' }}</h2>
+          <h2 class="section-title">
+            {{ plannerTargetSlot ? 'Wybierz Przepis' : 
+               (currentView === 'FAVORITES' ? 'Twoje Ulubione' : 'Książka Kucharska') }}
+          </h2>
+          <p v-if="plannerTargetSlot" class="planner-info">
+            Wybierasz przepis na **{{ plannerTargetSlot.mealType }}** w **{{ plannerTargetSlot.day }}**. Kliknij przepis, aby go dodać.
+          </p>
           
           <div class="recipes-grid">
             <div 
@@ -169,7 +280,11 @@ const displayedRecipes = computed(() => {
               <button class="action-btn yellow" @click="toggleFavorite(selectedRecipe)">
                 {{ selectedRecipe.isFavorite ? '💔 Usuń z ulubionych' : '❤ Dodaj do ulubionych' }}
               </button>
-            </div>
+              
+              <button class="action-btn green" style="margin-top: 15px;" @click="showPlanner">
+                📅 Dodaj do Planera
+              </button>
+              </div>
 
             <div class="detail-right">
               <h2>{{ selectedRecipe.title }}</h2>
@@ -188,6 +303,55 @@ const displayedRecipes = computed(() => {
               </div>
             </div>
           </div>
+        </main>
+
+        <main v-else-if="currentView === 'PLANNER'" class="planner-view">
+          <h2 class="section-title">📅 Planer Posiłków</h2>
+          <div class="planner-grid">
+            <div class="planner-header"></div>
+            <div v-for="meal in mealTypes" :key="meal" class="planner-header meal-type">{{ meal }}</div>
+            
+            <template v-for="group in groupedMealPlan" :key="group.day">
+              <div class="day-label">{{ group.day }}</div>
+              <div v-for="mealEntry in group.meals" :key="mealEntry!.mealType" class="meal-slot">
+                
+                <button 
+                  v-if="mealEntry!.recipeId" 
+                  class="recipe-btn filled" 
+                  @click="openRecipe(recipes.find(r => r.id === mealEntry!.recipeId)!)"
+                >
+                  {{ getRecipeTitleById(mealEntry!.recipeId) }}
+                  <span class="remove-btn" @click.stop="removeRecipeFromPlan(mealEntry!.day, mealEntry!.mealType)">✖</span>
+                </button>
+                
+                <button v-else class="recipe-btn empty" @click="startRecipeSelection(mealEntry!.day, mealEntry!.mealType)">
+                  + Dodaj Przepis
+                </button>
+              </div>
+            </template>
+          </div>
+          <p class="planner-tip">Kliknij na przepis, aby zobaczyć szczegóły, lub na slot, aby wybrać nowy.</p>
+        </main>
+
+        <main v-else-if="currentView === 'SHOPPING'" class="shopping-view">
+          <h2 class="section-title">🛒 Lista Zakupów</h2>
+          <p class="shopping-info">Lista generowana na podstawie wszystkich przepisów w **Planerze Posiłków**.</p>
+          
+          <div v-if="shoppingList.length === 0" class="empty-shopping">
+            <span class="icon">📝</span>
+            <p>Twój planer posiłków jest pusty! Dodaj przepisy, by wygenerować listę.</p>
+            <button class="action-btn blue" @click="showPlanner">Przejdź do Planera</button>
+          </div>
+
+          <ul v-else class="shopping-list">
+            <li v-for="(ingredient, index) in shoppingList" :key="index">
+              <label class="shopping-item">
+                <input type="checkbox" class="big-checkbox">
+                {{ ingredient }}
+              </label>
+            </li>
+          </ul>
+
         </main>
 
         <main v-else class="placeholder-view">
@@ -295,6 +459,8 @@ const displayedRecipes = computed(() => {
 
 /* --- LISTA PRZEPISÓW --- */
 .section-title { font-size: 2.5rem; margin-bottom: 30px; border-bottom: 2px dashed #000; display: inline-block; }
+.planner-info { font-size: 1.2rem; margin-bottom: 20px; padding: 10px; border: 2px dashed #FF5964; background: #FFE74C50; border-radius: 10px; } /* Dodano styl dla info w trybie wyboru */
+
 .recipes-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
@@ -330,4 +496,148 @@ const displayedRecipes = computed(() => {
 .ingredients-box ul { list-style: none; padding: 0; font-size: 1.5rem; }
 .ingredients-box li { margin-bottom: 15px; }
 .big-checkbox { width: 30px; height: 30px; margin-right: 15px; accent-color: #6BF178; }
+
+/* --- NOWE STYLE: PLANER POSIŁKÓW --- */
+.planner-grid {
+  display: grid;
+  grid-template-columns: 150px repeat(3, 1fr); /* Dzień + Śniadanie/Obiad/Kolacja */
+  border: 3px solid #000;
+  border-radius: 15px;
+  overflow: hidden;
+  box-shadow: 8px 8px 0 #000;
+}
+.planner-header {
+  padding: 15px 10px;
+  font-weight: bold;
+  font-size: 1.2rem;
+  border-bottom: 3px solid #000;
+  border-right: 3px solid #000;
+  text-align: center;
+  background-color: #FFE74C; /* Yellow */
+}
+.planner-header:last-child { border-right: none; }
+.day-label {
+  padding: 15px 10px;
+  font-weight: bold;
+  font-size: 1.2rem;
+  background-color: #f0f0f0;
+  border-right: 3px solid #000;
+  border-bottom: 1px solid #ddd;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+}
+/* Usuń dolną linię dla ostatniego dnia */
+.planner-grid > .day-label:nth-last-child(-n+4) { border-bottom: none; }
+
+.meal-slot {
+  padding: 10px;
+  border-right: 1px solid #ddd;
+  border-bottom: 1px solid #ddd;
+  min-height: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.meal-slot:nth-child(4n) { border-right: none; }
+
+/* Usuń dolną linię dla ostatniego wiersza */
+.planner-grid > .meal-slot:nth-last-child(-n+3) { border-bottom: none; }
+
+.recipe-btn {
+  width: 100%;
+  height: 100%;
+  min-height: 60px;
+  padding: 10px;
+  border-radius: 8px;
+  border: 2px dashed #000;
+  font-size: 1rem;
+  font-weight: bold;
+  cursor: pointer;
+  transition: background-color 0.1s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  position: relative;
+}
+.recipe-btn.empty {
+  background-color: #f9f9f9;
+  color: #555;
+  border-style: dashed;
+}
+.recipe-btn.empty:hover {
+  background-color: #FFE74C; /* Lekki Yellow */
+  border-style: solid;
+}
+.recipe-btn.filled {
+  background-color: #6BF178; /* Green */
+  color: #000;
+  border-style: solid;
+  box-shadow: 2px 2px 0 #000;
+}
+.remove-btn {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  background: #FF5964; /* Red */
+  border: 2px solid #000;
+  border-radius: 50%;
+  width: 20px;
+  height: 20px;
+  line-height: 16px;
+  font-size: 0.8rem;
+  font-weight: bold;
+  text-align: center;
+  z-index: 10;
+  box-shadow: 1px 1px 0 #000;
+}
+.planner-tip {
+  margin-top: 20px;
+  font-size: 1rem;
+  text-align: center;
+  color: #666;
+}
+
+/* NOWE STYLE: LISTA ZAKUPÓW */
+.shopping-info {
+  font-size: 1.2rem;
+  margin-bottom: 30px;
+  color: #666;
+  text-align: center;
+}
+.shopping-list {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr); /* 3 kolumny dla przejrzystości */
+  gap: 15px 30px;
+  font-size: 1.5rem;
+  border: 3px solid #000;
+  border-radius: 15px;
+  padding: 30px;
+  background: #f0f0f0;
+  box-shadow: 5px 5px 0 #000;
+}
+.shopping-item {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+.empty-shopping {
+  text-align: center;
+  padding: 50px;
+  border: 3px dashed #FF5964;
+  border-radius: 15px;
+  background: #FFE74C50;
+}
+.empty-shopping .icon {
+  font-size: 5rem;
+  display: block;
+  margin-bottom: 20px;
+}
+.empty-shopping p {
+  font-size: 1.5rem;
+  margin-bottom: 30px;
+}
 </style>
